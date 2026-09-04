@@ -1,0 +1,3 @@
+changes:
+  - section: "Features Added"
+    description: "Added `monitor workspace log search` for synchronous, bounded searches of Basic and Auxiliary Log Analytics tables."
