@@ -25,6 +25,18 @@ The two paths are not interchangeable, so search is a sibling tool rather than a
 
 The command is read-only, idempotent, non-destructive, and transport-neutral, so it behaves identically in stdio and HTTP modes.
 
+## Server discovery modes
+
+| Server start configuration | Exposed tool | Routed command |
+| --- | --- | --- |
+| `--mode all --namespace monitor` | `monitor_workspace_log_search` | Direct tool call |
+| `--tool monitor_workspace_log_search` | `monitor_workspace_log_search` | Direct tool call |
+| Default mode or `--mode namespace --namespace monitor` | `monitor` | `monitor_workspace_log_search` |
+| `--mode single --namespace monitor` | `azure` | Tool `monitor`, command `monitor_workspace_log_search` |
+| `--mode consolidated --namespace monitor` | `get_azure_resource_and_app_health_status` | `get_azure_resource_and_app_health_status_monitor_workspace_log_search` |
+
+Direct mode advertises the command's `WorkspaceLogSearchResult` output schema when structured output is enabled. Namespace and consolidated modes wrap the result in the repository's aggregate `tool-result` envelope. Single mode wraps the downstream MCP call result and forwards the structured-output setting to its child Monitor server.
+
 ## Input contract
 
 | Option | Required | Meaning |

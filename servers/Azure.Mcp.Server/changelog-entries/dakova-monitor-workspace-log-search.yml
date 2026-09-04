@@ -1,3 +1,5 @@
 changes:
   - section: "Features Added"
     description: "Added `monitor workspace log search` for synchronous, bounded searches of Basic and Auxiliary Log Analytics tables."
+  - section: "Bugs Fixed"
+    description: "Preserved configured consolidated-tool descriptions and structured output when single mode starts child namespace servers."
