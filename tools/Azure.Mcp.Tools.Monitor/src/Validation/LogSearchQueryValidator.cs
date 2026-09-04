@@ -78,15 +78,16 @@ internal static class LogSearchQueryValidator
             throw new CommandValidationException("--query must be a KQL pipeline fragment beginning with '|'.");
         }
 
-        ValidateStructure(RemoveQuotedText(trimmed));
+        ValidateStructure(BlankQuotedTextAndRejectComments(trimmed));
     }
 
     /// <summary>
-    /// Blanks out string literals so structural scanning never sees quoted content.
+    /// Blanks out string literals so structural scanning never sees quoted content, and rejects
+    /// comments, which can only be recognized while scanning outside a literal.
     /// Standard literals ('..' / "..") use backslash escapes; verbatim literals (@'..' / @"..")
     /// have no backslash escape and represent an embedded quote by doubling it.
     /// </summary>
-    private static string RemoveQuotedText(string pipeline)
+    private static string BlankQuotedTextAndRejectComments(string pipeline)
     {
         var result = pipeline.ToCharArray();
         char quote = '\0';

@@ -1,34 +1,41 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Text.Json;
+using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 using Xunit;
 
 namespace Azure.Mcp.Server.Tests.Infrastructure;
 
+/// <summary>
+/// Checks Monitor discovery and schemas without querying Azure.
+/// Stateless requests are covered by <see cref="ServerModeCoverageTests"/>.
+/// </summary>
 public sealed class MonitorLogSearchServerModeTests
 {
     private const string SearchTool = "monitor_workspace_log_search";
     private const string ConsolidatedTool = "get_azure_resource_and_app_health_status";
     private const string ConsolidatedSearchCommand =
         "get_azure_resource_and_app_health_status_monitor_workspace_log_search";
+    private const string LearnIntent = "Discover Monitor log search commands.";
+
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(120);
 
     private static string AzmcpPath =>
         Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "azmcp.exe" : "azmcp");
 
     [Theory]
     [InlineData("server start --mode all --namespace monitor --structured-output-mode duplicated")]
-    [InlineData("server start --tool monitor_workspace_log_search --structured-output-mode duplicated")]
+    [InlineData("server start --tool " + SearchTool + " --structured-output-mode duplicated")]
     public async Task DirectModes_ExposeSearchToolWithOutputSchema(string arguments)
     {
-        await using var server = await StdioServer.StartAsync(arguments);
+        await using var server = await ServerSession.StartAsync(arguments);
 
-        // tools/list is intentionally stateless and must work without initialize.
-        var result = await server.RequestAsync(1, "tools/list", new { });
-        var tools = result.GetProperty("tools").EnumerateArray().ToList();
-        var search = Assert.Single(tools, tool => tool.GetProperty("name").GetString() == SearchTool);
-        var schema = search.GetProperty("outputSchema");
+        var tools = await server.ListToolsAsync();
+        var search = Assert.Single(tools, tool => tool.Name == SearchTool);
+        var schema = RequireOutputSchema(search);
 
         AssertTypeIncludes(schema.GetProperty("type"), "object");
         var properties = schema.GetProperty("properties");
@@ -46,90 +53,57 @@ public sealed class MonitorLogSearchServerModeTests
     [InlineData("server start --mode namespace --namespace monitor --structured-output-mode duplicated")]
     public async Task NamespaceModes_WithMonitorFilter_DiscoverSearchCommand(string arguments)
     {
-        await using var server = await StdioServer.StartAsync(arguments);
-        await server.InitializeAsync();
+        await using var server = await ServerSession.StartAsync(arguments);
 
-        var listed = await server.RequestAsync(2, "tools/list", new { });
-        var monitor = Assert.Single(
-            listed.GetProperty("tools").EnumerateArray(),
-            tool => tool.GetProperty("name").GetString() == "monitor");
-        AssertAggregateSchema(monitor.GetProperty("outputSchema"), includesTool: false);
+        var tools = await server.ListToolsAsync();
+        var monitor = Assert.Single(tools, tool => tool.Name == "monitor");
+        AssertAggregateSchema(RequireOutputSchema(monitor), includesTool: false);
 
-        var called = await server.RequestAsync(
-            3,
-            "tools/call",
-            new
-            {
-                name = "monitor",
-                arguments = new { intent = "Discover Monitor log search commands.", learn = true }
-            });
-
-        Assert.Equal("tool-list", called.GetProperty("structuredContent").GetProperty("kind").GetString());
-        AssertContainsCommand(called.GetProperty("structuredContent"), SearchTool);
+        var structuredContent = await server.LearnAsync("monitor");
+        AssertContainsCommand(structuredContent, SearchTool);
     }
 
     [Fact]
     public async Task SingleMode_WithMonitorFilter_DiscoversSearchCommand()
     {
-        await using var server = await StdioServer.StartAsync(
+        await using var server = await ServerSession.StartAsync(
             "server start --mode single --namespace monitor --structured-output-mode duplicated");
-        await server.InitializeAsync();
 
-        var listed = await server.RequestAsync(2, "tools/list", new { });
-        var azure = Assert.Single(listed.GetProperty("tools").EnumerateArray());
-        Assert.Equal("azure", azure.GetProperty("name").GetString());
-        AssertAggregateSchema(azure.GetProperty("outputSchema"), includesTool: true);
+        var azure = Assert.Single(await server.ListToolsAsync());
+        Assert.Equal("azure", azure.Name);
+        AssertAggregateSchema(RequireOutputSchema(azure), includesTool: true);
 
-        var called = await server.RequestAsync(
-            3,
-            "tools/call",
-            new
-            {
-                name = "azure",
-                arguments = new
-                {
-                    intent = "Discover Monitor log search commands.",
-                    tool = "monitor",
-                    learn = true
-                }
-            });
-
-        Assert.Equal("tool-list", called.GetProperty("structuredContent").GetProperty("kind").GetString());
-        AssertContainsCommand(called.GetProperty("structuredContent"), SearchTool);
+        var structuredContent = await server.LearnAsync("azure", tool: "monitor");
+        AssertContainsCommand(structuredContent, SearchTool);
     }
 
     [Fact]
     public async Task ConsolidatedMode_WithMonitorFilter_DiscoversMappedSearchCommand()
     {
-        await using var server = await StdioServer.StartAsync(
+        await using var server = await ServerSession.StartAsync(
             "server start --mode consolidated --namespace monitor --structured-output-mode duplicated");
-        await server.InitializeAsync();
 
-        var listed = await server.RequestAsync(2, "tools/list", new { });
-        var consolidated = Assert.Single(
-            listed.GetProperty("tools").EnumerateArray(),
-            tool => tool.GetProperty("name").GetString() == ConsolidatedTool);
+        var consolidated = Assert.Single(await server.ListToolsAsync(), tool => tool.Name == ConsolidatedTool);
         Assert.Contains(
             "search Basic or Auxiliary Log Analytics tables",
-            consolidated.GetProperty("description").GetString(),
+            consolidated.Description,
             StringComparison.OrdinalIgnoreCase);
-        AssertAggregateSchema(consolidated.GetProperty("outputSchema"), includesTool: false);
+        AssertAggregateSchema(RequireOutputSchema(consolidated), includesTool: false);
 
-        var called = await server.RequestAsync(
-            3,
-            "tools/call",
-            new
-            {
-                name = ConsolidatedTool,
-                arguments = new { intent = "Discover Monitor log search commands.", learn = true }
-            });
+        var structuredContent = await server.LearnAsync(ConsolidatedTool);
+        AssertContainsCommand(structuredContent, ConsolidatedSearchCommand);
+    }
 
-        Assert.Equal("tool-list", called.GetProperty("structuredContent").GetProperty("kind").GetString());
-        AssertContainsCommand(called.GetProperty("structuredContent"), ConsolidatedSearchCommand);
+    private static JsonElement RequireOutputSchema(Tool tool)
+    {
+        Assert.True(tool.OutputSchema.HasValue, $"Tool '{tool.Name}' did not advertise an output schema.");
+        return tool.OutputSchema!.Value;
     }
 
     private static void AssertContainsCommand(JsonElement structuredContent, string expectedCommand)
     {
+        Assert.Equal("tool-list", structuredContent.GetProperty("kind").GetString());
+
         var commands = structuredContent.GetProperty("tools")
             .EnumerateArray()
             .Select(tool => tool.GetProperty("command").GetString())
@@ -146,9 +120,7 @@ public sealed class MonitorLogSearchServerModeTests
             return;
         }
 
-        Assert.Contains(
-            expected,
-            type.EnumerateArray().Select(item => item.GetString()));
+        Assert.Contains(expected, type.EnumerateArray().Select(item => item.GetString()));
     }
 
     private static void AssertAggregateSchema(JsonElement schema, bool includesTool)
@@ -171,126 +143,85 @@ public sealed class MonitorLogSearchServerModeTests
         Assert.Equal(includesTool, required.Contains("tool"));
     }
 
-    private sealed class StdioServer(Process process, string arguments) : IAsyncDisposable
+    private sealed class ServerSession(McpClient client, string arguments, ConcurrentQueue<string> standardError)
+        : IAsyncDisposable
     {
-        private int _nextId = 10;
-
-        public static async Task<StdioServer> StartAsync(string arguments)
+        public static async Task<ServerSession> StartAsync(string arguments)
         {
-            Assert.True(File.Exists(AzmcpPath), $"Executable not found at {AzmcpPath}.");
+            Assert.True(File.Exists(AzmcpPath), $"Executable not found at {AzmcpPath}. Build Azure.Mcp.Server first.");
 
-            var process = Process.Start(new ProcessStartInfo
+            var standardError = new ConcurrentQueue<string>();
+            var transport = new StdioClientTransport(new StdioClientTransportOptions
             {
-                FileName = AzmcpPath,
-                Arguments = arguments,
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
+                Name = "monitor-log-search-mode-test",
+                Command = AzmcpPath,
+                Arguments = arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries),
+                StandardErrorLines = standardError.Enqueue
             });
-            Assert.NotNull(process);
 
-            await Task.Delay(500, TestContext.Current.CancellationToken);
-            return new(process, arguments);
+            var client = await McpClient.CreateAsync(
+                transport,
+                new McpClientOptions { InitializationTimeout = Timeout },
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            return new ServerSession(client, arguments, standardError);
         }
 
-        public async Task InitializeAsync()
+        public async Task<IReadOnlyList<Tool>> ListToolsAsync()
         {
-            await RequestAsync(
-                _nextId++,
-                "initialize",
-                new
-                {
-                    protocolVersion = "2025-11-25",
-                    capabilities = new { },
-                    clientInfo = new { name = "mode-test", version = "1.0" }
-                });
-            await WriteAsync(
-                new { jsonrpc = "2.0", method = "notifications/initialized" },
-                TestContext.Current.CancellationToken);
-        }
+            using var cancellation = CreateRequestCancellation();
 
-        public async Task<JsonElement> RequestAsync(int id, string method, object parameters)
-        {
-            await WriteAsync(
-                new { jsonrpc = "2.0", id, method, @params = parameters },
-                TestContext.Current.CancellationToken);
-
-            using var cancellationSource = CancellationTokenSource.CreateLinkedTokenSource(
-                TestContext.Current.CancellationToken);
-            cancellationSource.CancelAfter(TimeSpan.FromSeconds(60));
-
-            while (true)
+            var tools = new List<Tool>();
+            string? cursor = null;
+            do
             {
-                using var cancellationRegistration = cancellationSource.Token.Register(() =>
-                {
-                    try
-                    {
-                        if (!process.HasExited)
-                        {
-                            process.Kill(entireProcessTree: true);
-                        }
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        // The process exited between the state check and the kill request.
-                    }
-                });
-                var line = await process.StandardOutput.ReadLineAsync(cancellationSource.Token);
-                if (line is null)
-                {
-                    var exitCode = process.HasExited ? process.ExitCode.ToString() : "running";
-                    var standardError = process.HasExited
-                        ? await process.StandardError.ReadToEndAsync()
-                        : string.Empty;
-                    Assert.Fail(
-                        $"Server exited before responding. Arguments: {arguments}. ExitCode: {exitCode}. StdErr: {standardError}");
-                }
-
-                using var document = JsonDocument.Parse(line);
-                var root = document.RootElement;
-                if (root.TryGetProperty("id", out var responseId) &&
-                    responseId.ValueKind == JsonValueKind.Number &&
-                    responseId.GetInt32() == id)
-                {
-                    if (root.TryGetProperty("error", out var error))
-                    {
-                        Assert.Fail(error.GetRawText());
-                    }
-
-                    return root.GetProperty("result").Clone();
-                }
+                var result = await client.ListToolsAsync(
+                    new ListToolsRequestParams { Cursor = cursor },
+                    cancellation.Token);
+                tools.AddRange(result.Tools);
+                cursor = result.NextCursor;
             }
+            while (cursor is not null);
+
+            return tools;
         }
 
-        public async ValueTask DisposeAsync()
+        public async Task<JsonElement> LearnAsync(string toolName, string? tool = null)
         {
-            process.StandardInput.Close();
-            using var cancellationSource = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-            try
+            var callArguments = new Dictionary<string, object?>
             {
-                await process.WaitForExitAsync(cancellationSource.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
+                ["intent"] = LearnIntent,
+                ["learn"] = true
+            };
 
-                await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            if (tool is not null)
+            {
+                callArguments["tool"] = tool;
             }
 
-            process.Dispose();
+            using var cancellation = CreateRequestCancellation();
+            var result = await client.CallToolAsync(toolName, callArguments, cancellationToken: cancellation.Token);
+
+            Assert.False(
+                result.IsError == true,
+                $"'{toolName}' learn call failed for 'azmcp {arguments}'. StdErr: {Describe(standardError)}");
+            Assert.True(
+                result.StructuredContent.HasValue,
+                $"'{toolName}' learn call returned no structured content for 'azmcp {arguments}'.");
+
+            return result.StructuredContent!.Value;
         }
 
-        private async Task WriteAsync(object message, CancellationToken cancellationToken)
+        public ValueTask DisposeAsync() => client.DisposeAsync();
+
+        private static CancellationTokenSource CreateRequestCancellation()
         {
-            await process.StandardInput.WriteLineAsync(
-                JsonSerializer.Serialize(message).AsMemory(),
-                cancellationToken);
-            await process.StandardInput.FlushAsync(cancellationToken);
+            var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            cancellation.CancelAfter(Timeout);
+            return cancellation;
         }
+
+        private static string Describe(ConcurrentQueue<string> standardError) =>
+            standardError.IsEmpty ? "<empty>" : string.Join(Environment.NewLine, standardError);
     }
 }

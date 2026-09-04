@@ -8,6 +8,7 @@ using Azure.Core;
 using Azure.Core.Pipeline;
 using Azure.Identity;
 using Azure.Mcp.Core.Services.Azure;
+using Azure.Mcp.Tools.Monitor.Models.Log;
 using Azure.Mcp.Tools.Monitor.Services;
 using Azure.ResourceManager;
 using Azure.ResourceManager.Resources;
@@ -48,16 +49,11 @@ public sealed class MonitorLogSearchServiceTests
                 }
                 """));
 
-        var result = await fixture.Service.SearchWorkspaceLogs(
-            Subscription,
-            ResourceGroup,
-            Workspace,
-            Table,
-            Query,
-            "2026-09-02T00:00:00Z/2026-09-03T00:00:00Z",
-            7,
-            "tenant",
-            TestContext.Current.CancellationToken);
+        var result = await fixture.SearchAsync(
+            TestContext.Current.CancellationToken,
+            timespan: "2026-09-02T00:00:00Z/2026-09-03T00:00:00Z",
+            limit: 7,
+            tenant: "tenant");
 
         Assert.Equal("Auxiliary", result.Plan);
         Assert.Equal(1, result.RowCount);
@@ -104,16 +100,7 @@ public sealed class MonitorLogSearchServiceTests
     {
         var fixture = CreateFixture(plan, DataResponse("""{"tables":[]}"""));
 
-        var result = await fixture.Service.SearchWorkspaceLogs(
-            Subscription,
-            ResourceGroup,
-            Workspace,
-            Table,
-            Query,
-            Timespan,
-            20,
-            null,
-            TestContext.Current.CancellationToken);
+        var result = await fixture.SearchAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(plan, result.Plan);
         Assert.Equal(0, result.RowCount);
@@ -129,16 +116,7 @@ public sealed class MonitorLogSearchServiceTests
             cloud: AzureCloudConfiguration.AzureCloud.AzureChinaCloud);
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.NotImplemented, exception.StatusCode);
         Assert.Equal("UnsupportedCloud", exception.Code);
@@ -161,16 +139,7 @@ public sealed class MonitorLogSearchServiceTests
             lastPlanModified);
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
         Assert.Equal("InvalidTableMetadata", exception.Code);
@@ -187,16 +156,7 @@ public sealed class MonitorLogSearchServiceTests
             "not-a-timestamp");
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
         Assert.Equal("InvalidTableMetadata", exception.Code);
@@ -215,16 +175,7 @@ public sealed class MonitorLogSearchServiceTests
         var fixture = CreateFixture("Analytics", DataResponse("""{"tables":[]}"""), lastPlanModified);
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.Conflict, exception.StatusCode);
         Assert.Equal("UnsupportedTablePlan", exception.Code);
@@ -238,16 +189,7 @@ public sealed class MonitorLogSearchServiceTests
         var fixture = CreateFixture(string.Empty, DataResponse("""{"tables":[]}"""));
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
         Assert.Equal("InvalidTableMetadata", exception.Code);
@@ -261,16 +203,7 @@ public sealed class MonitorLogSearchServiceTests
         var fixture = CreateFixture("Auxiliary", DataResponse("""{"tables":[]}"""));
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                "P31D",
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken, timespan: "P31D"));
 
         Assert.Equal(HttpStatusCode.BadRequest, exception.StatusCode);
         Assert.Contains("30 days", exception.Message);
@@ -284,16 +217,7 @@ public sealed class MonitorLogSearchServiceTests
         var fixture = CreateFixture("Basic", DataResponse("""{"tables":[]}"""));
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                101,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken, limit: 101));
 
         Assert.Equal(HttpStatusCode.BadRequest, exception.StatusCode);
         Assert.Contains("between 1 and 100", exception.Message);
@@ -310,16 +234,9 @@ public sealed class MonitorLogSearchServiceTests
             "1990-01-01T00:00:00Z");
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                "2000-01-01T00:00:00Z/2000-01-02T00:00:00Z",
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(
+                TestContext.Current.CancellationToken,
+                timespan: "2000-01-01T00:00:00Z/2000-01-02T00:00:00Z"));
 
         Assert.Equal(HttpStatusCode.BadRequest, exception.StatusCode);
         Assert.Equal("BasicTimespanTooOld", exception.Code);
@@ -336,16 +253,9 @@ public sealed class MonitorLogSearchServiceTests
             "2026-09-02T12:00:00Z");
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                "2026-09-02T00:00:00Z/2026-09-03T00:00:00Z",
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(
+                TestContext.Current.CancellationToken,
+                timespan: "2026-09-02T00:00:00Z/2026-09-03T00:00:00Z"));
 
         Assert.Equal(HttpStatusCode.Conflict, exception.StatusCode);
         Assert.Equal("TablePlanTransition", exception.Code);
@@ -362,16 +272,9 @@ public sealed class MonitorLogSearchServiceTests
             "2026-09-03T00:00:00Z");
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                "2026-09-01T00:00:00Z/2026-09-02T00:00:00Z",
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(
+                TestContext.Current.CancellationToken,
+                timespan: "2026-09-01T00:00:00Z/2026-09-02T00:00:00Z"));
 
         Assert.Equal(HttpStatusCode.Conflict, exception.StatusCode);
         Assert.Equal("HistoricalTablePlanRange", exception.Code);
@@ -386,16 +289,7 @@ public sealed class MonitorLogSearchServiceTests
             "Basic",
             () => new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        var result = await fixture.Service.SearchWorkspaceLogs(
-            Subscription,
-            ResourceGroup,
-            Workspace,
-            Table,
-            Query,
-            Timespan,
-            20,
-            null,
-            TestContext.Current.CancellationToken);
+        var result = await fixture.SearchAsync(TestContext.Current.CancellationToken);
 
         Assert.Empty(result.Columns);
         Assert.Empty(result.Rows);
@@ -424,22 +318,42 @@ public sealed class MonitorLogSearchServiceTests
                 }
                 """));
 
-        var result = await fixture.Service.SearchWorkspaceLogs(
-            Subscription,
-            ResourceGroup,
-            Workspace,
-            Table,
-            Query,
-            Timespan,
-            20,
-            null,
-            TestContext.Current.CancellationToken);
+        var result = await fixture.SearchAsync(TestContext.Current.CancellationToken);
 
         Assert.True(result.IsPartial);
         Assert.Equal(1, result.RowCount);
         Assert.Equal("PartialError", result.Error?.Code);
         Assert.Equal("Service.Code", result.Error?.Details.Single().Code);
         Assert.DoesNotContain("sensitive", result.Error?.Details.Single().Message);
+    }
+
+    [Fact]
+    public async Task SearchWorkspaceLogs_EmptyPartialResult_PreservesError()
+    {
+        var fixture = CreateFixture("Basic", DataResponse(
+            """{"tables":[],"error":{"code":"PartialError","details":[]}}"""));
+
+        var result = await fixture.SearchAsync(TestContext.Current.CancellationToken);
+
+        Assert.Empty(result.Columns);
+        Assert.Empty(result.Rows);
+        Assert.Equal(0, result.RowCount);
+        Assert.True(result.IsPartial);
+        Assert.Equal("PartialError", result.Error?.Code);
+    }
+
+    [Theory]
+    [InlineData("""{"tables":[{"name":"First"},{"name":"Second"}]}""")]
+    [InlineData("""{"tables":[{"name":"PrimaryResult"},{"name":"PrimaryResult"}]}""")]
+    public async Task SearchWorkspaceLogs_AmbiguousResultTables_ReturnsBadGateway(string body)
+    {
+        var fixture = CreateFixture("Basic", DataResponse(body));
+
+        var exception = await Assert.ThrowsAsync<CommandValidationException>(
+            () => fixture.SearchAsync(TestContext.Current.CancellationToken));
+
+        Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
+        Assert.Equal("MalformedLogsResponse", exception.Code);
     }
 
     [Fact]
@@ -455,16 +369,7 @@ public sealed class MonitorLogSearchServiceTests
                 """));
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
         Assert.Equal("FatalLogsError", exception.Code);
@@ -478,16 +383,7 @@ public sealed class MonitorLogSearchServiceTests
         var fixture = CreateFixture("Basic", DataResponse("{not-json"));
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
         Assert.Equal("MalformedLogsResponse", exception.Code);
@@ -513,16 +409,7 @@ public sealed class MonitorLogSearchServiceTests
                 """));
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
         Assert.Equal("InvalidRowShape", exception.Code);
@@ -537,16 +424,7 @@ public sealed class MonitorLogSearchServiceTests
             DataResponse(new string('x', (1024 * 1024) + 1)));
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, exception.StatusCode);
         Assert.Equal("ResponseTooLarge", exception.Code);
@@ -568,20 +446,37 @@ public sealed class MonitorLogSearchServiceTests
             });
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal((HttpStatusCode)429, exception.StatusCode);
         Assert.Contains("17 seconds", exception.Message);
         Assert.DoesNotContain("backend details", exception.Message);
+        Assert.Equal(1, fixture.DataHandler.CallCount);
+    }
+
+    [Theory]
+    [InlineData(false, "Retry later.")]
+    [InlineData(true, "Retry after 0 seconds.")]
+    public async Task SearchWorkspaceLogs_ThrottleWithMissingOrPastRetryDate_ReturnsGuidance(
+        bool includePastDate,
+        string expectedGuidance)
+    {
+        var fixture = CreateFixture("Basic", () =>
+        {
+            var response = DataResponse("""{"code":"TooManyRequests"}""", (HttpStatusCode)429)();
+            if (includePastDate)
+            {
+                response.Headers.RetryAfter = new(DateTimeOffset.UtcNow.AddMinutes(-1));
+            }
+
+            return response;
+        });
+
+        var exception = await Assert.ThrowsAsync<CommandValidationException>(
+            () => fixture.SearchAsync(TestContext.Current.CancellationToken));
+
+        Assert.Equal((HttpStatusCode)429, exception.StatusCode);
+        Assert.Contains(expectedGuidance, exception.Message);
         Assert.Equal(1, fixture.DataHandler.CallCount);
     }
 
@@ -595,16 +490,7 @@ public sealed class MonitorLogSearchServiceTests
                 HttpStatusCode.GatewayTimeout));
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.GatewayTimeout, exception.StatusCode);
         Assert.Contains("shorter timespan", exception.Message);
@@ -624,16 +510,7 @@ public sealed class MonitorLogSearchServiceTests
             });
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.GatewayTimeout, exception.StatusCode);
         Assert.Equal("LogsSearchTimeout", exception.Code);
@@ -656,16 +533,7 @@ public sealed class MonitorLogSearchServiceTests
             });
 
         var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                cancellationSource.Token));
+            fixture.SearchAsync(cancellationSource.Token));
 
         Assert.True(cancellationSource.IsCancellationRequested);
         Assert.True(exception.CancellationToken.IsCancellationRequested);
@@ -690,16 +558,7 @@ public sealed class MonitorLogSearchServiceTests
             });
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                token));
+            fixture.SearchAsync(token));
 
         Assert.Equal(1, fixture.DataHandler.CallCount);
     }
@@ -724,16 +583,7 @@ public sealed class MonitorLogSearchServiceTests
             workspaceStatus: workspaceStatus);
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(expectedStatus, exception.StatusCode);
         Assert.Equal(expectedCode, exception.Code);
@@ -759,16 +609,7 @@ public sealed class MonitorLogSearchServiceTests
             tableStatus: tableStatus);
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(tableStatus, exception.StatusCode);
         Assert.Equal(expectedCode, exception.Code);
@@ -790,16 +631,7 @@ public sealed class MonitorLogSearchServiceTests
                 HttpStatusCode.Forbidden));
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
         Assert.Equal("AccessDenied", exception.Code);
@@ -822,16 +654,7 @@ public sealed class MonitorLogSearchServiceTests
                 null));
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                "tenant",
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken, tenant: "tenant"));
 
         Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
         Assert.Equal("TenantResolutionFailed", exception.Code);
@@ -855,16 +678,7 @@ public sealed class MonitorLogSearchServiceTests
             .Returns(credential);
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
-            fixture.Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                20,
-                null,
-                TestContext.Current.CancellationToken));
+            fixture.SearchAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.Unauthorized, exception.StatusCode);
         Assert.Equal("LogsAuthenticationFailed", exception.Code);
@@ -1040,7 +854,24 @@ public sealed class MonitorLogSearchServiceTests
         IAzureService AzureService,
         CapturingHttpMessageHandler ArmHandler,
         CapturingHttpMessageHandler DataHandler,
-        CapturingTokenCredential LogsCredential);
+        CapturingTokenCredential LogsCredential)
+    {
+        public Task<WorkspaceLogSearchResult> SearchAsync(
+            CancellationToken cancellationToken,
+            string timespan = Timespan,
+            int limit = 20,
+            string? tenant = null) =>
+            Service.SearchWorkspaceLogs(
+                Subscription,
+                ResourceGroup,
+                Workspace,
+                Table,
+                Query,
+                timespan,
+                limit,
+                tenant,
+                cancellationToken);
+    }
 
     private sealed class CapturingTokenCredential(string token) : TokenCredential
     {

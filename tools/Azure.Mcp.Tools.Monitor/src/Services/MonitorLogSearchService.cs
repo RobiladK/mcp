@@ -19,8 +19,7 @@ using Microsoft.Mcp.Core.Services.Azure.Authentication;
 namespace Azure.Mcp.Tools.Monitor.Services;
 
 /// <summary>
-/// Runs a single bounded Basic or Auxiliary table search in three phases: resolve and validate the
-/// workspace and table metadata, send one <c>/search</c> request, then map the response.
+/// Runs a single bounded Basic or Auxiliary table search against the Log Analytics <c>/search</c> API.
 /// </summary>
 public sealed class MonitorLogSearchService(
     IAzureService azureService,
@@ -30,6 +29,8 @@ public sealed class MonitorLogSearchService(
     private const int MaxResponseBytes = 1024 * 1024;
     private const int MaxRowLimit = 100;
     private const string PublicCloudScope = "https://api.loganalytics.io/.default";
+    private const string SearchTimedOutMessage =
+        "The Logs search timed out. Use a shorter timespan or a more selective predicate.";
     private static readonly Uri s_publicCloudBaseUri = new("https://api.loganalytics.io/");
     private static readonly TimeSpan s_httpTimeout = TimeSpan.FromSeconds(200);
     private readonly IHttpClientFactory _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
@@ -77,9 +78,6 @@ public sealed class MonitorLogSearchService(
         return MapResponse(responseBytes, table, target.Plan, timespan, limit);
     }
 
-    /// <summary>
-    /// Phase 1a: validates the caller-supplied request shape before any network call is made.
-    /// </summary>
     private static LogSearchTimeRange ValidateRequest(
         string subscription,
         string resourceGroup,
@@ -107,11 +105,7 @@ public sealed class MonitorLogSearchService(
         return LogSearchTimeRangeParser.Parse(timespan, now);
     }
 
-    /// <summary>
-    /// Phase 1b: reads the workspace and table metadata from Azure Resource Manager and confirms the
-    /// table plan supports a search over the requested interval.
-    /// </summary>
-    private async Task<SearchTarget> ResolveSearchTargetAsync(
+    private async Task<(Guid CustomerId, string Plan)> ResolveSearchTargetAsync(
         string subscription,
         string resourceGroup,
         string workspace,
@@ -182,13 +176,9 @@ public sealed class MonitorLogSearchService(
         }
 
         var plan = ValidateTablePlan(tableResource, timeRange, now);
-        return new(customerId.Value, plan);
+        return (customerId.Value, plan);
     }
 
-    /// <summary>
-    /// Confirms the table uses a searchable plan and that the requested interval lies inside the
-    /// window that plan can serve.
-    /// </summary>
     private static string ValidateTablePlan(
         OperationalInsightsTableResource tableResource,
         LogSearchTimeRange timeRange,
@@ -197,10 +187,7 @@ public sealed class MonitorLogSearchService(
         var plan = tableResource.Data.Plan?.ToString();
         if (string.IsNullOrWhiteSpace(plan))
         {
-            throw new CommandValidationException(
-                "The Log Analytics table plan metadata was incomplete.",
-                HttpStatusCode.BadGateway,
-                "InvalidTableMetadata");
+            throw CreateIncompleteTableMetadataException();
         }
 
         // Default Analytics tables can omit the plan-change timestamp.
@@ -216,10 +203,7 @@ public sealed class MonitorLogSearchService(
         var lastPlanModifiedDate = tableResource.Data.LastPlanModifiedDate;
         if (string.IsNullOrWhiteSpace(lastPlanModifiedDate))
         {
-            throw new CommandValidationException(
-                "The Log Analytics table plan metadata was incomplete.",
-                HttpStatusCode.BadGateway,
-                "InvalidTableMetadata");
+            throw CreateIncompleteTableMetadataException();
         }
 
         if (!DateTimeOffset.TryParse(
@@ -259,8 +243,8 @@ public sealed class MonitorLogSearchService(
     }
 
     /// <summary>
-    /// Phase 2: sends one bounded <c>/search</c> request. Returns <see langword="null"/> when the service
-    /// reports no content, otherwise the size-limited response body.
+    /// Sends one bounded <c>/search</c> request. Returns <see langword="null"/> when the service reports
+    /// no content, otherwise the size-limited response body.
     /// </summary>
     private async Task<byte[]?> SendSearchAsync(
         Guid customerId,
@@ -272,16 +256,64 @@ public sealed class MonitorLogSearchService(
         string? tenant,
         CancellationToken cancellationToken)
     {
-        AccessToken accessToken;
+        var accessToken = await AcquireLogsTokenAsync(endpoint.Scope, tenant, cancellationToken);
+
+        var requestUri = new Uri(
+            endpoint.BaseUri,
+            $"v1/workspaces/{customerId:D}/search?timespan={Uri.EscapeDataString(timespan)}");
+        using var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.Token);
+        request.Headers.TryAddWithoutValidation("Prefer", "wait=180");
+        var requestBytes = JsonSerializer.SerializeToUtf8Bytes(
+            new LogSearchApiRequest($"{table} {query.Trim()}\n| take {limit}"),
+            MonitorJsonContext.Default.LogSearchApiRequest);
+        request.Content = new ByteArrayContent(requestBytes);
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        using var client = _httpClientFactory.CreateClient();
+        // ResponseHeadersRead ends HttpClient.Timeout before the body is read.
+        client.Timeout = Timeout.InfiniteTimeSpan;
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(s_httpTimeout);
+
+        try
+        {
+            using var response = await client.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                timeoutSource.Token);
+
+            if (response.StatusCode == HttpStatusCode.NoContent)
+            {
+                return null;
+            }
+
+            var responseBytes = await ReadSizeLimitedBytesAsync(response.Content, timeoutSource.Token);
+            return response.IsSuccessStatusCode
+                ? responseBytes
+                : throw CreateSearchHttpException(response, responseBytes);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new CommandValidationException(
+                SearchTimedOutMessage,
+                HttpStatusCode.GatewayTimeout,
+                "LogsSearchTimeout");
+        }
+    }
+
+    private async Task<AccessToken> AcquireLogsTokenAsync(
+        string scope,
+        string? tenant,
+        CancellationToken cancellationToken)
+    {
         try
         {
             var tenantId = string.IsNullOrWhiteSpace(tenant)
                 ? null
                 : await AzureService.ResolveTenantIdAsync(tenant, cancellationToken);
             var credential = await AzureService.GetTokenCredentialAsync(tenantId, cancellationToken);
-            accessToken = await credential.GetTokenAsync(
-                new TokenRequestContext([endpoint.Scope]),
-                cancellationToken);
+            return await credential.GetTokenAsync(new TokenRequestContext([scope]), cancellationToken);
         }
         catch (CredentialUnavailableException)
         {
@@ -307,53 +339,8 @@ public sealed class MonitorLogSearchService(
                 status,
                 "TenantResolutionFailed");
         }
-
-        var requestUri = new Uri(
-            endpoint.BaseUri,
-            $"v1/workspaces/{customerId:D}/search?timespan={Uri.EscapeDataString(timespan)}");
-        using var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.Token);
-        request.Headers.TryAddWithoutValidation("Prefer", "wait=180");
-        var requestBytes = JsonSerializer.SerializeToUtf8Bytes(
-            new LogSearchApiRequest($"{table} {query.Trim()}\n| take {limit}"),
-            MonitorJsonContext.Default.LogSearchApiRequest);
-        request.Content = new ByteArrayContent(requestBytes);
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-
-        using var client = _httpClientFactory.CreateClient();
-        client.Timeout = Timeout.InfiniteTimeSpan;
-        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutSource.CancelAfter(s_httpTimeout);
-
-        try
-        {
-            using var response = await client.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead,
-                timeoutSource.Token);
-
-            if (response.StatusCode == HttpStatusCode.NoContent)
-            {
-                return null;
-            }
-
-            var responseBytes = await ReadSizeLimitedBytesAsync(response.Content, timeoutSource.Token);
-            return response.IsSuccessStatusCode
-                ? responseBytes
-                : throw CreateSearchHttpException(response, responseBytes);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new CommandValidationException(
-                "The Logs search timed out. Use a shorter timespan or a more selective predicate.",
-                HttpStatusCode.GatewayTimeout,
-                "LogsSearchTimeout");
-        }
     }
 
-    /// <summary>
-    /// Phase 3: deserializes the response and maps it to the typed result.
-    /// </summary>
     private static WorkspaceLogSearchResult MapResponse(
         byte[] responseBytes,
         string table,
@@ -498,57 +485,36 @@ public sealed class MonitorLogSearchService(
                 "MalformedLogsResponse");
         }
 
-        if (response.Tables.Count == 0)
+        List<LogSearchColumn> columns = [];
+        List<IReadOnlyList<JsonElement>> rows = [];
+        if (response.Tables.Count > 0)
         {
-            return new(
-                table,
-                plan,
-                timespan,
-                [],
-                [],
-                0,
-                limit,
-                isPartial,
-                isPartial ? CreatePartialError(response.Error!) : null);
+            var resultTable = SelectResultTable(response.Tables);
+            if (resultTable.Columns is null || resultTable.Rows is null ||
+                resultTable.Columns.Any(column => string.IsNullOrWhiteSpace(column.Name) || string.IsNullOrWhiteSpace(column.Type)))
+            {
+                throw new CommandValidationException(
+                    "The Logs service response contained invalid table metadata.",
+                    HttpStatusCode.BadGateway,
+                    "MalformedLogsResponse");
+            }
+
+            if (resultTable.Rows.Count > limit ||
+                resultTable.Rows.Any(row => row.Count != resultTable.Columns.Count))
+            {
+                throw new CommandValidationException(
+                    "The Logs service response contained an invalid row shape.",
+                    HttpStatusCode.BadGateway,
+                    "InvalidRowShape");
+            }
+
+            columns = resultTable.Columns
+                .Select(column => new LogSearchColumn(column.Name!, column.Type!))
+                .ToList();
+            rows = resultTable.Rows
+                .Select(row => (IReadOnlyList<JsonElement>)row)
+                .ToList();
         }
-
-        var primaryTables = response.Tables
-            .Where(item => string.Equals(item.Name, "PrimaryResult", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        var resultTable = primaryTables.Count switch
-        {
-            1 => primaryTables[0],
-            0 when response.Tables.Count == 1 => response.Tables[0],
-            _ => throw new CommandValidationException(
-                "The Logs service response contained an ambiguous table shape.",
-                HttpStatusCode.BadGateway,
-                "MalformedLogsResponse")
-        };
-
-        if (resultTable.Columns is null || resultTable.Rows is null ||
-            resultTable.Columns.Any(column => string.IsNullOrWhiteSpace(column.Name) || string.IsNullOrWhiteSpace(column.Type)))
-        {
-            throw new CommandValidationException(
-                "The Logs service response contained invalid table metadata.",
-                HttpStatusCode.BadGateway,
-                "MalformedLogsResponse");
-        }
-
-        if (resultTable.Rows.Count > limit ||
-            resultTable.Rows.Any(row => row.Count != resultTable.Columns.Count))
-        {
-            throw new CommandValidationException(
-                "The Logs service response contained an invalid row shape.",
-                HttpStatusCode.BadGateway,
-                "InvalidRowShape");
-        }
-
-        var columns = resultTable.Columns
-            .Select(column => new LogSearchColumn(column.Name!, column.Type!))
-            .ToList();
-        var rows = resultTable.Rows
-            .Select(row => (IReadOnlyList<JsonElement>)row)
-            .ToList();
 
         return new(
             table,
@@ -560,6 +526,22 @@ public sealed class MonitorLogSearchService(
             limit,
             isPartial,
             isPartial ? CreatePartialError(response.Error!) : null);
+    }
+
+    private static LogSearchApiTable SelectResultTable(List<LogSearchApiTable> tables)
+    {
+        var primaryTables = tables
+            .Where(item => string.Equals(item.Name, "PrimaryResult", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return primaryTables.Count switch
+        {
+            1 => primaryTables[0],
+            0 when tables.Count == 1 => tables[0],
+            _ => throw new CommandValidationException(
+                "The Logs service response contained an ambiguous table shape.",
+                HttpStatusCode.BadGateway,
+                "MalformedLogsResponse")
+        };
     }
 
     private static LogSearchError CreatePartialError(LogSearchApiError error)
@@ -614,8 +596,7 @@ public sealed class MonitorLogSearchService(
             HttpStatusCode.Unauthorized => "Authentication failed for the Logs service.",
             HttpStatusCode.Forbidden => "Authorization failed for the Logs data query.",
             HttpStatusCode.NotFound => "The requested Logs search resource was not found.",
-            HttpStatusCode.RequestTimeout or HttpStatusCode.GatewayTimeout =>
-                "The Logs search timed out. Use a shorter timespan or a more selective predicate.",
+            HttpStatusCode.RequestTimeout or HttpStatusCode.GatewayTimeout => SearchTimedOutMessage,
             (HttpStatusCode)429 => CreateThrottledMessage(response),
             _ => $"The Logs service request failed with status {(int)status} ({code})."
         };
@@ -625,24 +606,15 @@ public sealed class MonitorLogSearchService(
 
     private static string CreateThrottledMessage(HttpResponseMessage response)
     {
-        var retryAfter = response.Headers.RetryAfter?.Delta;
-        if (retryAfter.HasValue)
+        var retryAfter = response.Headers.RetryAfter;
+        var delay = retryAfter?.Delta ?? (retryAfter?.Date - DateTimeOffset.UtcNow);
+        if (!delay.HasValue)
         {
-            var seconds = Math.Clamp((int)Math.Ceiling(retryAfter.Value.TotalSeconds), 0, 3600);
-            return $"The Logs service throttled the search. Retry after {seconds} seconds.";
+            return "The Logs service throttled the search. Retry later.";
         }
 
-        var retryOn = response.Headers.RetryAfter?.Date;
-        if (retryOn.HasValue)
-        {
-            var seconds = Math.Clamp(
-                (int)Math.Ceiling((retryOn.Value - DateTimeOffset.UtcNow).TotalSeconds),
-                0,
-                3600);
-            return $"The Logs service throttled the search. Retry after {seconds} seconds.";
-        }
-
-        return "The Logs service throttled the search. Retry later.";
+        var seconds = Math.Clamp((int)Math.Ceiling(delay.Value.TotalSeconds), 0, 3600);
+        return $"The Logs service throttled the search. Retry after {seconds} seconds.";
     }
 
     private static string SanitizeBackendCode(string? code)
@@ -665,5 +637,9 @@ public sealed class MonitorLogSearchService(
             HttpStatusCode.RequestEntityTooLarge,
             "ResponseTooLarge");
 
-    private readonly record struct SearchTarget(Guid CustomerId, string Plan);
+    private static CommandValidationException CreateIncompleteTableMetadataException() =>
+        new(
+            "The Log Analytics table plan metadata was incomplete.",
+            HttpStatusCode.BadGateway,
+            "InvalidTableMetadata");
 }

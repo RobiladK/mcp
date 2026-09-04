@@ -73,16 +73,7 @@ public sealed class WorkspaceLogSearchCommandTests
         var response = await ExecuteCommandAsync(args);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.Status);
-        await Service.DidNotReceive().SearchWorkspaceLogs(
-            Arg.Any<string>(),
-            Arg.Any<string>(),
-            Arg.Any<string>(),
-            Arg.Any<string>(),
-            Arg.Any<string>(),
-            Arg.Any<string>(),
-            Arg.Any<int>(),
-            Arg.Any<string?>(),
-            Arg.Any<CancellationToken>());
+        await AssertNoSearchReceived();
     }
 
     [Theory]
@@ -90,32 +81,13 @@ public sealed class WorkspaceLogSearchCommandTests
     [InlineData(100)]
     public async Task ExecuteAsync_ValidBoundaryLimit_PassesLimitToService(int limit)
     {
-        Service.SearchWorkspaceLogs(
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                limit,
-                Arg.Any<string?>(),
-                Arg.Any<CancellationToken>())
-            .Returns(EmptyResult(limit));
+        SetupSearchResult(EmptyResult(limit));
 
         var response = await ExecuteCommandAsync(
             ValidArguments().Concat(["--limit", limit.ToString()]).ToArray());
 
         Assert.Equal(HttpStatusCode.OK, response.Status);
-        await Service.Received(1).SearchWorkspaceLogs(
-            Subscription,
-            ResourceGroup,
-            Workspace,
-            Table,
-            Query,
-            Timespan,
-            limit,
-            Arg.Any<string?>(),
-            TestContext.Current.CancellationToken);
+        await AssertSearchReceived(limit, null, TestContext.Current.CancellationToken);
     }
 
     [Theory]
@@ -124,94 +96,38 @@ public sealed class WorkspaceLogSearchCommandTests
     [InlineData(101)]
     public async Task ExecuteAsync_OutOfRangeLimit_DelegatesToServiceForValidation(int limit)
     {
-        Service.SearchWorkspaceLogs(
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                limit,
-                Arg.Any<string?>(),
-                Arg.Any<CancellationToken>())
-            .ThrowsAsync(new CommandValidationException("--limit must be between 1 and 100."));
+        SetupSearchFailure(
+            new CommandValidationException("--limit must be between 1 and 100."));
 
         var response = await ExecuteCommandAsync(
             ValidArguments().Concat(["--limit", limit.ToString()]).ToArray());
 
         Assert.Equal(HttpStatusCode.BadRequest, response.Status);
         Assert.Equal("--limit must be between 1 and 100.", response.Message);
-        await Service.Received(1).SearchWorkspaceLogs(
-            Subscription,
-            ResourceGroup,
-            Workspace,
-            Table,
-            Query,
-            Timespan,
-            limit,
-            null,
-            TestContext.Current.CancellationToken);
+        await AssertSearchReceived(limit, null, TestContext.Current.CancellationToken);
     }
 
     [Fact]
     public async Task ExecuteAsync_OmittedLimit_UsesTwenty()
     {
-        Service.SearchWorkspaceLogs(
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                20,
-                Arg.Any<string?>(),
-                Arg.Any<CancellationToken>())
-            .Returns(EmptyResult(20));
+        SetupSearchResult(EmptyResult(20));
 
         var response = await ExecuteCommandAsync(ValidArguments());
 
         Assert.Equal(HttpStatusCode.OK, response.Status);
-        await Service.Received(1).SearchWorkspaceLogs(
-            Subscription,
-            ResourceGroup,
-            Workspace,
-            Table,
-            Query,
-            Timespan,
-            20,
-            null,
-            TestContext.Current.CancellationToken);
+        await AssertSearchReceived(20, null, TestContext.Current.CancellationToken);
     }
 
     [Fact]
     public async Task ExecuteAsync_PassesEveryServiceArgumentExactly()
     {
-        Service.SearchWorkspaceLogs(
-                Subscription,
-                ResourceGroup,
-                Workspace,
-                Table,
-                Query,
-                Timespan,
-                37,
-                Tenant,
-                Arg.Any<CancellationToken>())
-            .Returns(EmptyResult(37));
+        SetupSearchResult(EmptyResult(37));
 
         var response = await ExecuteCommandAsync(
             ValidArguments().Concat(["--limit", "37", "--tenant", Tenant]).ToArray());
 
         Assert.Equal(HttpStatusCode.OK, response.Status);
-        await Service.Received(1).SearchWorkspaceLogs(
-            Subscription,
-            ResourceGroup,
-            Workspace,
-            Table,
-            Query,
-            Timespan,
-            37,
-            Tenant,
-            TestContext.Current.CancellationToken);
+        await AssertSearchReceived(37, Tenant, TestContext.Current.CancellationToken);
     }
 
     [Fact]
@@ -236,17 +152,7 @@ public sealed class WorkspaceLogSearchCommandTests
                 "PartialError",
                 "The service returned incomplete query results.",
                 [new("ServiceCode", "Sanitized detail")]));
-        Service.SearchWorkspaceLogs(
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<int>(),
-                Arg.Any<string?>(),
-                Arg.Any<CancellationToken>())
-            .Returns(serviceResult);
+        SetupSearchResult(serviceResult);
 
         var response = await ExecuteCommandAsync(ValidArguments());
         var result = ValidateAndDeserializeResponse(
@@ -265,20 +171,10 @@ public sealed class WorkspaceLogSearchCommandTests
     [Fact]
     public async Task ExecuteAsync_ServiceValidationFailure_ReturnsSafeStatusWithoutErrorLogging()
     {
-        Service.SearchWorkspaceLogs(
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<int>(),
-                Arg.Any<string?>(),
-                Arg.Any<CancellationToken>())
-            .ThrowsAsync(new CommandValidationException(
-                "The table uses the Analytics plan. Use monitor_workspace_log_query for Analytics tables.",
-                HttpStatusCode.Conflict,
-                "UnsupportedTablePlan"));
+        SetupSearchFailure(new CommandValidationException(
+            "The table uses the Analytics plan. Use monitor_workspace_log_query for Analytics tables.",
+            HttpStatusCode.Conflict,
+            "UnsupportedTablePlan"));
 
         var response = await ExecuteCommandAsync(ValidArguments());
 
@@ -296,17 +192,7 @@ public sealed class WorkspaceLogSearchCommandTests
     [Fact]
     public async Task ExecuteAsync_UnexpectedServiceFailure_ReturnsUnprocessableEntity()
     {
-        Service.SearchWorkspaceLogs(
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<int>(),
-                Arg.Any<string?>(),
-                Arg.Any<CancellationToken>())
-            .ThrowsAsync(new InvalidOperationException("service failed"));
+        SetupSearchFailure(new InvalidOperationException("service failed"));
 
         var response = await ExecuteCommandAsync(ValidArguments());
 
@@ -320,17 +206,7 @@ public sealed class WorkspaceLogSearchCommandTests
         using var cancellationSource = new CancellationTokenSource();
         cancellationSource.Cancel();
         var token = cancellationSource.Token;
-        Service.SearchWorkspaceLogs(
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<string>(),
-                Arg.Any<int>(),
-                Arg.Any<string?>(),
-                token)
-            .Returns(Task.FromCanceled<WorkspaceLogSearchResult>(token));
+        SetupCanceledSearch(token);
         var options = new WorkspaceLogSearchOptions
         {
             Subscription = Subscription,
@@ -343,16 +219,7 @@ public sealed class WorkspaceLogSearchCommandTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => Command.ExecuteAsync(Context, options, token));
-        await Service.Received(1).SearchWorkspaceLogs(
-            Subscription,
-            ResourceGroup,
-            Workspace,
-            Table,
-            Query,
-            Timespan,
-            20,
-            null,
-            token);
+        await AssertSearchReceived(20, null, token);
         Assert.Null(Context.Response.Results);
     }
 
@@ -365,6 +232,79 @@ public sealed class WorkspaceLogSearchCommandTests
         "--query", Query,
         "--timespan", Timespan
     ];
+
+    private void SetupSearchResult(WorkspaceLogSearchResult result)
+    {
+        Service.SearchWorkspaceLogs(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<int>(),
+                Arg.Any<string?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(result);
+    }
+
+    private void SetupSearchFailure(Exception exception)
+    {
+        Service.SearchWorkspaceLogs(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<int>(),
+                Arg.Any<string?>(),
+                Arg.Any<CancellationToken>())
+            .ThrowsAsync(exception);
+    }
+
+    private void SetupCanceledSearch(CancellationToken cancellationToken)
+    {
+        Service.SearchWorkspaceLogs(
+                Subscription,
+                ResourceGroup,
+                Workspace,
+                Table,
+                Query,
+                Timespan,
+                20,
+                null,
+                cancellationToken)
+            .Returns(Task.FromCanceled<WorkspaceLogSearchResult>(cancellationToken));
+    }
+
+    private async Task AssertSearchReceived(int limit, string? tenant, CancellationToken cancellationToken)
+    {
+        await Service.Received(1).SearchWorkspaceLogs(
+            Subscription,
+            ResourceGroup,
+            Workspace,
+            Table,
+            Query,
+            Timespan,
+            limit,
+            tenant,
+            cancellationToken);
+    }
+
+    private async Task AssertNoSearchReceived()
+    {
+        await Service.DidNotReceive().SearchWorkspaceLogs(
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            Arg.Any<int>(),
+            Arg.Any<string?>(),
+            Arg.Any<CancellationToken>());
+    }
 
     private static WorkspaceLogSearchResult EmptyResult(int limit) =>
         new(Table, "Basic", Timespan, [], [], 0, limit, false, null);

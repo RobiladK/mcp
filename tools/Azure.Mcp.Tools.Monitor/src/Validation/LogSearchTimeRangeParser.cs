@@ -12,10 +12,6 @@ namespace Azure.Mcp.Tools.Monitor.Validation;
 
 internal static class LogSearchTimeRangeParser
 {
-    /// <summary>
-    /// The longest time range a log search may cover. Callers that enforce related age limits
-    /// should reference this value instead of duplicating the constant.
-    /// </summary>
     public static TimeSpan MaximumTimespan { get; } = TimeSpan.FromDays(30);
 
     private static readonly string[] s_rfc3339Formats =

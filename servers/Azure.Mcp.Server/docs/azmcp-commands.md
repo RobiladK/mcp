@@ -3321,15 +3321,13 @@ azmcp monitor workspace log query --subscription <subscription> \
                                   --query "| order by TimeGenerated desc"
 
 # Search a Basic or Auxiliary table in a Log Analytics workspace.
-# Basic and Auxiliary tables use the workspace search endpoint instead of the
-# Analytics query endpoint; use workspace log query for Analytics tables.
-# --query is a KQL pipeline fragment that begins with '|'; it must not name a
-# table because the server binds --table as the source and appends a final take
-# derived from --limit (default 20, maximum 100).
-# --timespan is required and cannot exceed 30 days. It accepts a positive ISO 8601
-# duration (for example "P1D") or a closed RFC 3339 start/end interval.
-# Results return typed columns and rows and mark whether they are complete or partial.
-# Scan cost is based on the table's ingested volume across --timespan, not --limit.
+# Use workspace log query for Analytics tables.
+# --query must begin with '|' and omit the primary table name.
+# The server binds --table and caps output at --limit (default 20, maximum 100).
+# --timespan is a positive ISO 8601 duration (such as "P1D") or a closed
+# RFC 3339 start/end interval, up to 30 days. Basic queries cover only the last 30 days.
+# Results preserve column types and flag service-reported partial results.
+# Scan cost depends on ingested volume across --timespan, not --limit.
 # ❌ Destructive | ✅ Idempotent | ❌ OpenWorld | ✅ ReadOnly | ❌ Secret | ❌ LocalRequired
 azmcp monitor workspace log search --subscription <subscription> \
                                    --resource-group <resource-group> \
