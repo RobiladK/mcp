@@ -63,8 +63,8 @@ The final `take` is always appended, even when the caller's pipeline already end
 Before any data-plane call, the tool reads the exact table's `Plan` and `LastPlanModifiedDate` from the `Azure.ResourceManager.OperationalInsights` SDK. Validation fails closed:
 
 - Missing table returns 404.
-- An Analytics or otherwise unsupported plan returns 409 and points to `monitor workspace log query`.
-- Missing or unparseable plan metadata returns 502 with no data-plane request.
+- An Analytics or otherwise unsupported plan returns 409 and points to `monitor workspace log query`, even if no plan-change timestamp is present.
+- A missing plan, or a missing or invalid transition timestamp on a Basic or Auxiliary table, returns 502 with no data-plane request.
 - An interval crossing `lastPlanModifiedDate` returns 409 and instructs the caller to query the supported portion beginning at that boundary. Without this, one response could span different access behaviors and still look complete.
 
 A plan change between metadata read and the request is an unavoidable race; the service error is surfaced and the tool never falls back to `/query`.

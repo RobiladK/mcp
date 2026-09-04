@@ -204,10 +204,15 @@ public sealed class MonitorLogSearchServiceTests
         Assert.Equal(0, fixture.DataHandler.CallCount);
     }
 
-    [Fact]
-    public async Task SearchWorkspaceLogs_RejectsAnalyticsBeforeDataRequest()
+    [Theory]
+    [InlineData("2000-01-01T00:00:00Z")]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("not-a-timestamp")]
+    public async Task SearchWorkspaceLogs_RejectsAnalyticsBeforeDataRequest(string? lastPlanModified)
     {
-        var fixture = CreateFixture("Analytics", DataResponse("""{"tables":[]}"""));
+        var fixture = CreateFixture("Analytics", DataResponse("""{"tables":[]}"""), lastPlanModified);
 
         var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
             fixture.Service.SearchWorkspaceLogs(
@@ -224,6 +229,29 @@ public sealed class MonitorLogSearchServiceTests
         Assert.Equal(HttpStatusCode.Conflict, exception.StatusCode);
         Assert.Equal("UnsupportedTablePlan", exception.Code);
         Assert.Contains("monitor_workspace_log_query", exception.Message);
+        Assert.Equal(0, fixture.DataHandler.CallCount);
+    }
+
+    [Fact]
+    public async Task SearchWorkspaceLogs_RejectsMissingTablePlan()
+    {
+        var fixture = CreateFixture(string.Empty, DataResponse("""{"tables":[]}"""));
+
+        var exception = await Assert.ThrowsAsync<CommandValidationException>(() =>
+            fixture.Service.SearchWorkspaceLogs(
+                Subscription,
+                ResourceGroup,
+                Workspace,
+                Table,
+                Query,
+                Timespan,
+                20,
+                null,
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
+        Assert.Equal("InvalidTableMetadata", exception.Code);
+        Assert.Contains("metadata was incomplete", exception.Message);
         Assert.Equal(0, fixture.DataHandler.CallCount);
     }
 

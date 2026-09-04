@@ -195,8 +195,26 @@ public sealed class MonitorLogSearchService(
         DateTimeOffset now)
     {
         var plan = tableResource.Data.Plan?.ToString();
+        if (string.IsNullOrWhiteSpace(plan))
+        {
+            throw new CommandValidationException(
+                "The Log Analytics table plan metadata was incomplete.",
+                HttpStatusCode.BadGateway,
+                "InvalidTableMetadata");
+        }
+
+        // Default Analytics tables can omit the plan-change timestamp.
+        bool isBasic = string.Equals(plan, "Basic", StringComparison.OrdinalIgnoreCase);
+        if (!isBasic && !string.Equals(plan, "Auxiliary", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CommandValidationException(
+                "This tool only searches Basic and Auxiliary tables. Use monitor_workspace_log_query for Analytics tables.",
+                HttpStatusCode.Conflict,
+                "UnsupportedTablePlan");
+        }
+
         var lastPlanModifiedDate = tableResource.Data.LastPlanModifiedDate;
-        if (string.IsNullOrWhiteSpace(plan) || string.IsNullOrWhiteSpace(lastPlanModifiedDate))
+        if (string.IsNullOrWhiteSpace(lastPlanModifiedDate))
         {
             throw new CommandValidationException(
                 "The Log Analytics table plan metadata was incomplete.",
@@ -214,15 +232,6 @@ public sealed class MonitorLogSearchService(
                 "The Log Analytics table plan transition metadata was invalid.",
                 HttpStatusCode.BadGateway,
                 "InvalidTableMetadata");
-        }
-
-        bool isBasic = string.Equals(plan, "Basic", StringComparison.OrdinalIgnoreCase);
-        if (!isBasic && !string.Equals(plan, "Auxiliary", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new CommandValidationException(
-                "The table uses the Analytics plan. Use monitor_workspace_log_query for Analytics tables.",
-                HttpStatusCode.Conflict,
-                "UnsupportedTablePlan");
         }
 
         if (isBasic && timeRange.Start < now - LogSearchTimeRangeParser.MaximumTimespan)
