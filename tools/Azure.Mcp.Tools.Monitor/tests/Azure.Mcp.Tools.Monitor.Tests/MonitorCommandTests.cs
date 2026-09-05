@@ -186,7 +186,7 @@ public sealed class MonitorCommandTests(ITestOutputHelper output, TestProxyFixtu
             new()
             {
                 { "subscription", Settings.SubscriptionId },
-                { "workspace", GetLogSearchDeploymentOutput("logSearchWorkspaceName") },
+                { "workspace", Settings.ResourceBaseName },
                 { "table", table },
                 { "query", $"{table} | take 1" },
                 { "hours", 24 },
@@ -266,7 +266,7 @@ public sealed class MonitorCommandTests(ITestOutputHelper output, TestProxyFixtu
         {
             { "subscription", Settings.SubscriptionId },
             { "resource-group", Settings.ResourceGroupName },
-            { "workspace", GetLogSearchDeploymentOutput("logSearchWorkspaceName") },
+            { "workspace", Settings.ResourceBaseName },
             { "table", table },
             { "query", query },
             { "timespan", timespan },
@@ -295,17 +295,22 @@ public sealed class MonitorCommandTests(ITestOutputHelper output, TestProxyFixtu
         Assert.False(result.Value.AssertProperty("isPartial").GetBoolean());
         Assert.Equal(JsonValueKind.Null, result.Value.AssertProperty("error").ValueKind);
 
-        var columns = result.Value.AssertProperty("columns")
-            .EnumerateArray()
-            .Select((column, index) => (Name: column.AssertProperty("name").GetString(), Index: index))
-            .ToDictionary(column => column.Name!, column => column.Index);
+        // Recordings scrub column names; the explicit project clause fixes their order.
+        var columns = result.Value.AssertProperty("columns").EnumerateArray().ToArray();
+        Assert.Equal<string?>(
+            ["string", "string", "long", "bool", "string"],
+            columns.Select(column => column.AssertProperty("type").GetString()));
+        Assert.All(columns, column => Assert.Equal(
+            JsonValueKind.String,
+            column.AssertProperty("name").ValueKind));
         var row = result.Value.AssertProperty("rows")[0];
 
-        Assert.Equal(expectedFixtureId, row[columns["FixtureId"]].GetString());
-        Assert.Equal(expectedMessage, row[columns["Message"]].GetString());
-        Assert.Equal(expectedCount, row[columns["Count"]].GetInt64());
-        Assert.Equal(expectedEnabled, row[columns["Enabled"]].GetBoolean());
-        Assert.Equal(string.Empty, row[columns["OptionalValue"]].GetString());
+        Assert.Equal(columns.Length, row.GetArrayLength());
+        Assert.Equal(expectedFixtureId, row[0].GetString());
+        Assert.Equal(expectedMessage, row[1].GetString());
+        Assert.Equal(expectedCount, row[2].GetInt64());
+        Assert.Equal(expectedEnabled, row[3].GetBoolean());
+        Assert.Equal(string.Empty, row[4].GetString());
     }
 
     private static void AssertErrorContains(JsonElement? response, string expected)

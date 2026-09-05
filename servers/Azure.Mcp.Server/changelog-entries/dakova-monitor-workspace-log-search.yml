@@ -5,3 +5,5 @@ changes:
     description: "Preserved configured consolidated-tool descriptions and structured output when single mode starts child namespace servers."
   - section: "Bugs Fixed"
     description: "Corrected Analytics-table routing guidance when Log Analytics table metadata omits the plan-change timestamp."
+  - section: "Bugs Fixed"
+    description: "Fixed log search playback tests to use sanitized workspace and column metadata."

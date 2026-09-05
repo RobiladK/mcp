@@ -57,6 +57,8 @@ public sealed class MonitorLogSearchServiceTests
 
         Assert.Equal("Auxiliary", result.Plan);
         Assert.Equal(1, result.RowCount);
+        Assert.Equal(["Count", "Enabled", "Message"], result.Columns.Select(column => column.Name).ToArray());
+        Assert.Equal(["long", "bool", "string"], result.Columns.Select(column => column.Type).ToArray());
         Assert.Equal(JsonValueKind.Number, result.Rows[0][0].ValueKind);
         Assert.Equal(42, result.Rows[0][0].GetInt32());
         Assert.Equal(JsonValueKind.True, result.Rows[0][1].ValueKind);
